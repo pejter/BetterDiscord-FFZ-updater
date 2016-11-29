@@ -30,10 +30,8 @@ type Emoticon struct {
 type EmoticonsList struct {
 	Links struct {
 		Next string `json:"next"`
-		// Self string `json:"self"`
 	} `json:"_links"`
-	Pages uint `json:"_pages"`
-	// TotalEmoticons uint `json:"_total"`
+	Pages         uint       `json:"_pages"`
 	EmoticonsList []Emoticon `json:"emoticons"`
 }
 
@@ -46,9 +44,7 @@ func (e *Emoticon) InBlacklist() bool {
 	return false
 }
 
-func update(output chan<- string) {
-	defer wg.Done()
-
+func update(output chan<- Emoticon) {
 	var outputWg sync.WaitGroup
 
 	resp, err := http.Get("https://raw.githubusercontent.com/Jiiks/BetterDiscordApp/master/data/emotefilter.json")
@@ -60,7 +56,7 @@ func update(output chan<- string) {
 	json.Unmarshal(body, &blacklist)
 	// fmt.Println(blacklist)
 
-	nextLink := SCHEME + BASE_URL + "emoticons?private=on&sort=updated&per_page=" + PER_PAGE
+	nextLink := SCHEME + BASE_URL + "emoticons?private=on&sort=updated-asc&per_page=" + PER_PAGE
 	for {
 		resp, err := http.Get(nextLink)
 		if err != nil {
@@ -68,18 +64,21 @@ func update(output chan<- string) {
 		}
 		defer resp.Body.Close()
 		body, err := ioutil.ReadAll(resp.Body)
+
 		var emoteList EmoticonsList
 		json.Unmarshal(body, &emoteList)
 		// fmt.Println(emoteList)
+
 		outputWg.Add(1)
 		go func(emotes []Emoticon) {
 			defer outputWg.Done()
+
 			for i := 0; i < len(emotes); i++ {
 				if emotes[i].InBlacklist() {
 					fmt.Println("Skipping blacklisted emote:", emotes[i].Name)
 					continue
 				}
-				output <- "\"" + emotes[i].Name + "\":\"" + strconv.FormatUint(emotes[i].Id, 10) + "\""
+				output <- emotes[i]
 			}
 		}(emoteList.EmoticonsList)
 
@@ -91,33 +90,39 @@ func update(output chan<- string) {
 	close(output)
 }
 
-func writeEmotesToFile(input <-chan string, filename string) {
+func writeEmotesToFile(input <-chan Emoticon, filename string) {
 	defer wg.Done()
-	file, err := os.Create(filename)
-	if err != nil {
-		log.Fatal("Could not create file:", err)
-	}
-	defer file.Close()
 
-	var i uint64
-	file.WriteString("{")
+	emotes := make(map[string]string)
 	for s := range input {
-		file.WriteString(s + ",")
-		i += 1
-		fmt.Printf("Written emotes: %d\r", i)
+		emotes[s.Name] = strconv.FormatUint(s.Id, 10)
+		fmt.Printf("Indexed emotes: %d\r", len(emotes))
 	}
-	file.Seek(-1, 1) // Go back 1 character to delete the last ','
-	file.WriteString("}")
+
+	if jsonOutput, err := json.Marshal(emotes); err != nil {
+		log.Fatal("Cannot marshal emotes to JSON:", err)
+	} else {
+		file, err := os.Create(filename)
+		if err != nil {
+			log.Fatal("Could not create file:", err)
+		}
+		defer file.Close()
+
+		fmt.Println("Writing emotes to", filename)
+		file.Write(jsonOutput)
+	}
 }
 
 func main() {
-	emoteChan := make(chan string, 200)
+	emoteChan := make(chan Emoticon, 200)
 	filename := "emotes_ffz.json"
+
 	if len(os.Args) > 1 {
 		filename = os.Args[1]
 	}
-	wg.Add(2)
-	go update(emoteChan)
+
+	wg.Add(1)
 	go writeEmotesToFile(emoteChan, filename)
+	update(emoteChan)
 	wg.Wait()
 }
